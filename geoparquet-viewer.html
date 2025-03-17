@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GeoParquet Viewer</title>
+    <script src="https://unpkg.com/deck.gl@latest/dist.min.js"></script>
+    <script src="https://unpkg.com/@deck.gl/core@latest/dist.min.js"></script>
+    <script src="https://unpkg.com/@deck.gl/layers@latest/dist.min.js"></script>
+    <script src="https://unpkg.com/@deck.gl/geo-layers@latest/dist.min.js"></script>
+    <script src="https://unpkg.com/maplibregl@3.6.2/dist/maplibre-gl.js"></script>
+    <link href="https://unpkg.com/maplibregl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+        }
+        #container {
+            display: flex;
+            height: calc(100vh - 40px);
+            gap: 20px;
+        }
+        #map {
+            flex: 1;
+            height: 100%;
+            border: 2px dashed #ccc;
+            position: relative;
+        }
+        #controls {
+            width: 300px;
+            padding: 20px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            overflow-y: auto;
+        }
+        .control-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        select, input {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        .drop-zone {
+            border: 2px dashed #ccc;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 20px;
+            background: white;
+            border-radius: 4px;
+        }
+        .drop-zone.dragover {
+            background: #e1f5fe;
+            border-color: #2196f3;
+        }
+        #deck-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="map">
+            <div id="deck-canvas"></div>
+        </div>
+        <div id="controls">
+            <div class="drop-zone" id="dropZone">
+                Drop GeoParquet file here
+            </div>
+            <div class="control-group">
+                <label for="fieldSelect">Classification Field:</label>
+                <select id="fieldSelect"></select>
+            </div>
+            <div class="control-group">
+                <label for="schemeSelect">Color Scheme:</label>
+                <select id="schemeSelect">
+                    <option value="red-amber-green">Red - Amber - Green</option>
+                    <option value="blue-yellow-red">Blue - Yellow - Red</option>
+                    <option value="viridis">Viridis</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label for="numClasses">Number of Classes:</label>
+                <input type="number" id="numClasses" min="2" max="10" value="3">
+            </div>
+            <button id="applyStyle">Apply Style</button>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/parquetjs@0.11.2/dist/parquet.min.js"></script>
+    <script>
+        let deckgl = null;
+        let currentData = null;
+
+        // Initialize deck.gl
+        function initDeckGL() {
+            deckgl = new deck.DeckGL({
+                container: 'deck-canvas',
+                initialViewState: {
+                    longitude: 0,
+                    latitude: 0,
+                    zoom: 2
+                },
+                controller: true,
+                layers: []
+            });
+        }
+
+        // Drop zone handling
+        const dropZone = document.getElementById('dropZone');
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, highlight, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, unhighlight, false);
+        });
+
+        function highlight(e) {
+            dropZone.classList.add('dragover');
+        }
+
+        function unhighlight(e) {
+            dropZone.classList.remove('dragover');
+        }
+
+        dropZone.addEventListener('drop', handleDrop, false);
+
+        async function handleDrop(e) {
+            const file = e.dataTransfer.files[0];
+            if (!file.name.endsWith('.parquet')) {
+                alert('Please drop a Parquet file');
+                return;
+            }
+
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                const reader = await parquet.ParquetReader.openFile(arrayBuffer);
+                const cursor = reader.getCursor();
+                const schema = reader.getSchema();
+                
+                // Get all records
+                const records = [];
+                let record = null;
+                while (record = await cursor.next()) {
+                    records.push(record);
+                }
+
+                // Update field select
+                const fieldSelect = document.getElementById('fieldSelect');
+                fieldSelect.innerHTML = '';
+                Object.keys(schema).forEach(field => {
+                    if (schema[field].type === 'DOUBLE' || schema[field].type === 'INT32' || schema[field].type === 'INT64') {
+                        const option = document.createElement('option');
+                        option.value = field;
+                        option.textContent = field;
+                        fieldSelect.appendChild(option);
+                    }
+                });
+
+                currentData = records;
+                updateMap(records);
+            } catch (error) {
+                console.error('Error reading Parquet file:', error);
+                alert('Error reading Parquet file');
+            }
+        }
+
+        function updateMap(records) {
+            const field = document.getElementById('fieldSelect').value;
+            const scheme = document.getElementById('schemeSelect').value;
+            const numClasses = parseInt(document.getElementById('numClasses').value);
+
+            // Calculate breaks
+            const values = records.map(r => r[field]).filter(v => v !== null);
+            const breaks = calculateBreaks(values, numClasses);
+
+            // Create color function
+            const colors = getColorScheme(scheme, numClasses);
+            const getColor = (value) => {
+                for (let i = 0; i < breaks.length; i++) {
+                    if (value <= breaks[i]) return colors[i];
+                }
+                return colors[colors.length - 1];
+            };
+
+            // Create GeoJSON layer
+            const geojson = {
+                type: 'FeatureCollection',
+                features: records.map(record => ({
+                    type: 'Feature',
+                    geometry: record.geometry,
+                    properties: {
+                        ...record,
+                        color: getColor(record[field])
+                    }
+                }))
+            };
+
+            // Create deck.gl GeoJsonLayer
+            const geoJsonLayer = new deck.GeoJsonLayer({
+                id: 'geojson-layer',
+                data: geojson,
+                filled: true,
+                stroked: true,
+                lineWidthScale: 1,
+                lineWidthMinPixels: 1,
+                getFillColor: d => d.properties.color,
+                getLineColor: [102, 102, 102],
+                getLineWidth: 1,
+                pickable: true,
+                autoHighlight: true,
+                highlightColor: [60, 60, 60, 40],
+                onClick: info => {
+                    if (info.object) {
+                        console.log('Clicked:', info.object.properties);
+                    }
+                }
+            });
+
+            // Update deck.gl layers
+            deckgl.setProps({
+                layers: [geoJsonLayer]
+            });
+
+            // Fit bounds
+            const bounds = getBounds(geojson);
+            deckgl.setProps({
+                initialViewState: {
+                    longitude: (bounds[0] + bounds[2]) / 2,
+                    latitude: (bounds[1] + bounds[3]) / 2,
+                    zoom: 2
+                }
+            });
+        }
+
+        function getBounds(geojson) {
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            
+            geojson.features.forEach(feature => {
+                const coordinates = feature.geometry.coordinates;
+                if (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon') {
+                    coordinates.flat(2).forEach(([x, y]) => {
+                        minX = Math.min(minX, x);
+                        minY = Math.min(minY, y);
+                        maxX = Math.max(maxX, x);
+                        maxY = Math.max(maxY, y);
+                    });
+                }
+            });
+            
+            return [minX, minY, maxX, maxY];
+        }
+
+        function calculateBreaks(values, numClasses) {
+            const sorted = [...values].sort((a, b) => a - b);
+            const breaks = [];
+            for (let i = 1; i < numClasses; i++) {
+                const index = Math.floor((i * sorted.length) / numClasses);
+                breaks.push(sorted[index]);
+            }
+            return breaks;
+        }
+
+        function getColorScheme(scheme, numClasses) {
+            switch (scheme) {
+                case 'red-amber-green':
+                    return ['#ff0000', '#ffa500', '#00ff00'];
+                case 'blue-yellow-red':
+                    return ['#0000ff', '#ffff00', '#ff0000'];
+                case 'viridis':
+                    return ['#440154', '#414487', '#2a788e', '#22a884', '#44bf70'];
+                default:
+                    return ['#ff0000', '#ffa500', '#00ff00'];
+            }
+        }
+
+        document.getElementById('applyStyle').addEventListener('click', () => {
+            if (currentData) {
+                updateMap(currentData);
+            }
+        });
+
+        // Initialize the map when the page loads
+        initDeckGL();
+    </script>
+</body>
+</html> 

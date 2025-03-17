@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DuckDB Viewer</title>
+    <script src="https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.28.0/dist/duckdb-wasm.js"></script>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+        }
+        #container {
+            display: flex;
+            height: calc(100vh - 40px);
+            gap: 20px;
+        }
+        #main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        #sidebar {
+            width: 300px;
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .panel {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .control-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        select, input, textarea {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        textarea {
+            height: 100px;
+            font-family: monospace;
+            resize: vertical;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        .drop-zone {
+            border: 2px dashed #ccc;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 20px;
+            background: #fafafa;
+            border-radius: 4px;
+        }
+        .drop-zone.dragover {
+            background: #e1f5fe;
+            border-color: #2196f3;
+        }
+        #results {
+            overflow: auto;
+            max-height: 400px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background: #f5f5f5;
+            font-weight: bold;
+        }
+        tr:hover {
+            background: #f9f9f9;
+        }
+        .error {
+            color: #d32f2f;
+            padding: 10px;
+            background: #ffebee;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .success {
+            color: #2e7d32;
+            padding: 10px;
+            background: #e8f5e9;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        #visualization {
+            height: 300px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="main-content">
+            <div class="panel">
+                <h2>Query Editor</h2>
+                <textarea id="queryEditor" placeholder="Enter your SQL query here..."></textarea>
+                <button id="executeQuery">Execute Query</button>
+                <div id="queryError" class="error" style="display: none;"></div>
+            </div>
+            <div class="panel">
+                <h2>Results</h2>
+                <div id="results"></div>
+            </div>
+            <div class="panel">
+                <h2>Visualization</h2>
+                <div id="visualization"></div>
+            </div>
+        </div>
+        <div id="sidebar">
+            <div class="drop-zone" id="dropZone">
+                Drop DuckDB file here
+            </div>
+            <div class="control-group">
+                <h3>Tables</h3>
+                <div id="tableList"></div>
+            </div>
+            <div class="control-group">
+                <h3>Visualization Options</h3>
+                <label for="chartType">Chart Type:</label>
+                <select id="chartType">
+                    <option value="bar">Bar Chart</option>
+                    <option value="line">Line Chart</option>
+                    <option value="scatter">Scatter Plot</option>
+                    <option value="pie">Pie Chart</option>
+                </select>
+                <label for="xAxis">X Axis:</label>
+                <select id="xAxis"></select>
+                <label for="yAxis">Y Axis:</label>
+                <select id="yAxis"></select>
+                <button id="updateChart">Update Chart</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let db = null;
+        let currentData = null;
+        let currentColumns = [];
+
+        // Initialize DuckDB
+        async function initDuckDB() {
+            try {
+                const JSDELIVR_BUNDLES = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm/dist";
+                const bundle = await duckdb.selectBundle({
+                    mvp: {
+                        mainModule: JSDELIVR_BUNDLES + "/duckdb-mvp.wasm",
+                        mainWorker: JSDELIVR_BUNDLES + "/duckdb-node-mvp.worker.js",
+                    },
+                    eh: {
+                        mainModule: JSDELIVR_BUNDLES + "/duckdb-eh.wasm",
+                        mainWorker: JSDELIVR_BUNDLES + "/duckdb-node-eh.worker.js",
+                    },
+                });
+
+                const worker = new Worker(bundle.mainWorker);
+                const logger = new duckdb.ConsoleLogger();
+                db = new duckdb.AsyncDuckDB(logger, worker);
+                await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+            } catch (error) {
+                console.error('Error initializing DuckDB:', error);
+                showError('Failed to initialize DuckDB');
+            }
+        }
+
+        // Drop zone handling
+        const dropZone = document.getElementById('dropZone');
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, highlight, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, unhighlight, false);
+        });
+
+        function highlight(e) {
+            dropZone.classList.add('dragover');
+        }
+
+        function unhighlight(e) {
+            dropZone.classList.remove('dragover');
+        }
+
+        dropZone.addEventListener('drop', handleDrop, false);
+
+        async function handleDrop(e) {
+            const file = e.dataTransfer.files[0];
+            if (!file.name.endsWith('.db')) {
+                showError('Please drop a DuckDB file');
+                return;
+            }
+
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                await db.connect();
+                await db.query(`ATTACH '${file.name}' AS db (READ_ONLY)`);
+                await loadTables();
+            } catch (error) {
+                console.error('Error loading database:', error);
+                showError('Failed to load database');
+            }
+        }
+
+        async function loadTables() {
+            try {
+                const result = await db.query("SELECT name FROM sqlite_master WHERE type='table'");
+                const tableList = document.getElementById('tableList');
+                tableList.innerHTML = '';
+                
+                result.toArray().forEach(row => {
+                    const button = document.createElement('button');
+                    button.textContent = row.name;
+                    button.style.width = '100%';
+                    button.style.marginBottom = '5px';
+                    button.onclick = () => loadTablePreview(row.name);
+                    tableList.appendChild(button);
+                });
+            } catch (error) {
+                console.error('Error loading tables:', error);
+                showError('Failed to load tables');
+            }
+        }
+
+        async function loadTablePreview(tableName) {
+            try {
+                const result = await db.query(`SELECT * FROM ${tableName} LIMIT 100`);
+                currentData = result.toArray();
+                currentColumns = result.schema.fields.map(f => f.name);
+                
+                // Update visualization options
+                updateVisualizationOptions();
+                
+                // Display results
+                displayResults(result);
+            } catch (error) {
+                console.error('Error loading table preview:', error);
+                showError('Failed to load table preview');
+            }
+        }
+
+        function updateVisualizationOptions() {
+            const xAxis = document.getElementById('xAxis');
+            const yAxis = document.getElementById('yAxis');
+            
+            xAxis.innerHTML = '';
+            yAxis.innerHTML = '';
+            
+            currentColumns.forEach(column => {
+                const xOption = document.createElement('option');
+                xOption.value = column;
+                xOption.textContent = column;
+                xAxis.appendChild(xOption);
+                
+                const yOption = document.createElement('option');
+                yOption.value = column;
+                yOption.textContent = column;
+                yAxis.appendChild(yOption);
+            });
+        }
+
+        function displayResults(result) {
+            const resultsDiv = document.getElementById('results');
+            const table = document.createElement('table');
+            
+            // Create header
+            const thead = document.createElement('thead');
+            const headerRow = document.createElement('tr');
+            result.schema.fields.forEach(field => {
+                const th = document.createElement('th');
+                th.textContent = field.name;
+                headerRow.appendChild(th);
+            });
+            thead.appendChild(headerRow);
+            table.appendChild(thead);
+            
+            // Create body
+            const tbody = document.createElement('tbody');
+            result.toArray().forEach(row => {
+                const tr = document.createElement('tr');
+                Object.values(row).forEach(value => {
+                    const td = document.createElement('td');
+                    td.textContent = value;
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+            table.appendChild(tbody);
+            
+            resultsDiv.innerHTML = '';
+            resultsDiv.appendChild(table);
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('queryError');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+        }
+
+        function showSuccess(message) {
+            const successDiv = document.createElement('div');
+            successDiv.className = 'success';
+            successDiv.textContent = message;
+            document.getElementById('results').prepend(successDiv);
+        }
+
+        document.getElementById('executeQuery').addEventListener('click', async () => {
+            const query = document.getElementById('queryEditor').value;
+            if (!query) return;
+
+            try {
+                const result = await db.query(query);
+                currentData = result.toArray();
+                currentColumns = result.schema.fields.map(f => f.name);
+                updateVisualizationOptions();
+                displayResults(result);
+                document.getElementById('queryError').style.display = 'none';
+            } catch (error) {
+                console.error('Query error:', error);
+                showError(error.message);
+            }
+        });
+
+        document.getElementById('updateChart').addEventListener('click', () => {
+            if (!currentData || currentData.length === 0) return;
+
+            const chartType = document.getElementById('chartType').value;
+            const xColumn = document.getElementById('xAxis').value;
+            const yColumn = document.getElementById('yAxis').value;
+
+            const xData = currentData.map(row => row[xColumn]);
+            const yData = currentData.map(row => row[yColumn]);
+
+            let trace;
+            switch (chartType) {
+                case 'bar':
+                    trace = {
+                        x: xData,
+                        y: yData,
+                        type: 'bar'
+                    };
+                    break;
+                case 'line':
+                    trace = {
+                        x: xData,
+                        y: yData,
+                        type: 'scatter',
+                        mode: 'lines+markers'
+                    };
+                    break;
+                case 'scatter':
+                    trace = {
+                        x: xData,
+                        y: yData,
+                        type: 'scatter',
+                        mode: 'markers'
+                    };
+                    break;
+                case 'pie':
+                    trace = {
+                        labels: xData,
+                        values: yData,
+                        type: 'pie'
+                    };
+                    break;
+            }
+
+            const layout = {
+                title: `${yColumn} vs ${xColumn}`,
+                xaxis: { title: xColumn },
+                yaxis: { title: yColumn }
+            };
+
+            Plotly.newPlot('visualization', [trace], layout);
+        });
+
+        // Initialize DuckDB when the page loads
+        initDuckDB();
+    </script>
+</body>
+</html> 
