@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XML/JSON Parser Generator</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/xml/xml.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/javascript/javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/python/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/hint/show-hint.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/hint/xml-hint.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/hint/javascript-hint.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/theme/monokai.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/hint/show-hint.css" rel="stylesheet">
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background-color: #f5f5f5;
+        }
+        #container {
+            display: flex;
+            height: calc(100vh - 40px);
+            gap: 20px;
+        }
+        .panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .panel-header {
+            padding: 15px;
+            background: #2c3e50;
+            color: white;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .panel-content {
+            flex: 1;
+            overflow: hidden;
+            position: relative;
+        }
+        .CodeMirror {
+            height: 100% !important;
+            font-size: 14px;
+        }
+        .controls {
+            padding: 15px;
+            background: #f8f9fa;
+            border-top: 1px solid #dee2e6;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        button {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #2980b9;
+        }
+        select {
+            padding: 8px;
+            margin-right: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .file-upload {
+            position: relative;
+            display: inline-block;
+        }
+        .file-upload input[type="file"] {
+            display: none;
+        }
+        .file-upload label {
+            background: #27ae60;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        .file-upload label:hover {
+            background: #219a52;
+        }
+        .drag-active {
+            border: 2px dashed #3498db !important;
+            background: rgba(52, 152, 219, 0.1) !important;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div class="panel">
+            <div class="panel-header">
+                Input
+                <select id="inputType">
+                    <option value="xml">XML</option>
+                    <option value="json">JSON</option>
+                </select>
+                <div class="file-upload">
+                    <label for="fileInput">Upload File</label>
+                    <input type="file" id="fileInput" accept=".xml,.json">
+                </div>
+            </div>
+            <div class="panel-content">
+                <textarea id="input"></textarea>
+            </div>
+            <div class="controls">
+                <button onclick="generateParser()">Generate Parser</button>
+            </div>
+        </div>
+        <div class="panel">
+            <div class="panel-header">Generated Python Parser</div>
+            <div class="panel-content">
+                <textarea id="output"></textarea>
+            </div>
+            <div class="controls">
+                <button onclick="copyToClipboard()">Copy to Clipboard</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize CodeMirror editors
+        let inputEditor = CodeMirror.fromTextArea(document.getElementById("input"), {
+            mode: "xml",
+            theme: "monokai",
+            lineNumbers: true,
+            autoCloseBrackets: true,
+            matchBrackets: true,
+            indentUnit: 4,
+            lineWrapping: true,
+            extraKeys: {"Ctrl-Space": "autocomplete"},
+            hintOptions: {
+                schemaInfo: {
+                    "!top": ["root"],
+                    root: {}
+                }
+            }
+        });
+
+        let outputEditor = CodeMirror.fromTextArea(document.getElementById("output"), {
+            mode: "python",
+            theme: "monokai",
+            lineNumbers: true,
+            readOnly: true,
+            indentUnit: 4,
+            lineWrapping: true
+        });
+
+        // Handle input type change
+        document.getElementById("inputType").addEventListener("change", function(e) {
+            const mode = e.target.value === "xml" ? "xml" : "javascript";
+            inputEditor.setOption("mode", mode);
+        });
+
+        // Handle file upload
+        document.getElementById("fileInput").addEventListener("change", function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                inputEditor.setValue(e.target.result);
+                document.getElementById("inputType").value = file.name.endsWith(".xml") ? "xml" : "json";
+                inputEditor.setOption("mode", file.name.endsWith(".xml") ? "xml" : "javascript");
+            };
+            reader.readAsText(file);
+        });
+
+        // Handle drag and drop
+        const panelContent = document.querySelector(".panel-content");
+        
+        panelContent.addEventListener("dragover", (e) => {
+            e.preventDefault();
+            panelContent.classList.add("drag-active");
+        });
+
+        panelContent.addEventListener("dragleave", () => {
+            panelContent.classList.remove("drag-active");
+        });
+
+        panelContent.addEventListener("drop", (e) => {
+            e.preventDefault();
+            panelContent.classList.remove("drag-active");
+            
+            const file = e.dataTransfer.files[0];
+            if (!file || (!file.name.endsWith(".xml") && !file.name.endsWith(".json"))) {
+                alert("Please drop a valid XML or JSON file");
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                inputEditor.setValue(e.target.result);
+                document.getElementById("inputType").value = file.name.endsWith(".xml") ? "xml" : "json";
+                inputEditor.setOption("mode", file.name.endsWith(".xml") ? "xml" : "javascript");
+            };
+            reader.readAsText(file);
+        });
+
+        // Enable autocompletion
+        inputEditor.on("keyup", function (cm, event) {
+            if (!cm.state.completionActive && 
+                event.keyCode != 13 && 
+                event.keyCode != 27) {
+                CodeMirror.commands.autocomplete(cm, null, {completeSingle: false});
+            }
+        });
+
+        function generateParser() {
+            const inputType = document.getElementById("inputType").value;
+            const input = inputEditor.getValue().trim();
+            
+            if (!input) {
+                alert("Please enter some input data");
+                return;
+            }
+
+            try {
+                let pythonCode = "";
+                if (inputType === "xml") {
+                    pythonCode = generateXMLParser(input);
+                } else {
+                    pythonCode = generateJSONParser(input);
+                }
+                outputEditor.setValue(pythonCode);
+            } catch (error) {
+                alert("Error parsing input: " + error.message);
+            }
+        }
+
+        function generatePydanticModel(element) {
+            let modelName = element.tagName.charAt(0).toUpperCase() + element.tagName.slice(1);
+            let fields = [];
+            
+            // Handle attributes
+            for (let attr of element.attributes) {
+                fields.push(`    ${attr.name}: str`);
+            }
+            
+            // Handle child elements
+            let childModels = new Set();
+            for (let child of element.children) {
+                let childName = child.tagName;
+                let childType = child.children.length > 0 ? childName.charAt(0).toUpperCase() + childName.slice(1) : "str";
+                fields.push(`    ${childName}: ${childType}`);
+                
+                if (child.children.length > 0) {
+                    childModels.add(generatePydanticModel(child));
+                }
+            }
+            
+            let model = `class ${modelName}(BaseModel):\n`;
+            model += fields.join("\n") + "\n";
+            
+            return Array.from(childModels).join("\n") + "\n" + model;
+        }
+
+        function generateXMLParser(xml) {
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(xml, "text/xml");
+            const root = xmlDoc.documentElement;
+            
+            return `from pydantic import BaseModel
+from typing import Dict, List, Union
+import xml.etree.ElementTree as ET
+
+${generatePydanticModel(root)}
+
+def parse_xml_file(file_path: str) -> Dict:
+    """
+    Parse XML file and return a Pydantic model instance
+    
+    Args:
+        file_path (str): Path to the XML file
+        
+    Returns:
+        Dict: Parsed XML data as Pydantic model
+    """
+    tree = ET.parse(file_path)
+    root = tree.getroot()
+    return parse_element(root)
+
+def parse_element(element: ET.Element) -> Union[Dict, str]:
+    """
+    Recursively parse XML element
+    
+    Args:
+        element (ET.Element): XML element to parse
+        
+    Returns:
+        Union[Dict, str]: Parsed element data
+    """
+    result = {}
+    
+    # Handle attributes
+    if element.attrib:
+        result.update(element.attrib)
+    
+    # Handle child elements
+    for child in element:
+        if child.tag in result:
+            if not isinstance(result[child.tag], list):
+                result[child.tag] = [result[child.tag]]
+            result[child.tag].append(parse_element(child))
+        else:
+            result[child.tag] = parse_element(child)
+    
+    # Handle text content
+    if len(result) == 0 and element.text and element.text.strip():
+        return element.text.strip()
+    
+    return result
+
+# Example usage:
+# data = parse_xml_file('your_file.xml')
+`;
+        }
+
+        function generateJSONParser(json) {
+            const data = JSON.parse(json);
+            
+            function generatePydanticModelFromJSON(obj, modelName = "Root") {
+                let fields = [];
+                let models = [];
+                
+                for (let [key, value] of Object.entries(obj)) {
+                    let type;
+                    if (Array.isArray(value)) {
+                        if (value.length > 0 && typeof value[0] === 'object') {
+                            const itemModelName = key.charAt(0).toUpperCase() + key.slice(1) + "Item";
+                            models.push(generatePydanticModelFromJSON(value[0], itemModelName));
+                            type = `List[${itemModelName}]`;
+                        } else {
+                            type = `List[${typeof value[0]}]`;
+                        }
+                    } else if (typeof value === 'object' && value !== null) {
+                        const nestedModelName = key.charAt(0).toUpperCase() + key.slice(1);
+                        models.push(generatePydanticModelFromJSON(value, nestedModelName));
+                        type = nestedModelName;
+                    } else {
+                        type = typeof value;
+                    }
+                    
+                    fields.push(`    ${key}: ${type}`);
+                }
+                
+                return `${models.join("\n\n")}
+
+class ${modelName}(BaseModel):
+${fields.join("\n")}`;
+            }
+            
+            return `from pydantic import BaseModel
+from typing import Dict, List, Union
+
+${generatePydanticModelFromJSON(data)}
+
+def parse_json_file(file_path: str) -> Root:
+    """
+    Parse JSON file and return a Pydantic model instance
+    
+    Args:
+        file_path (str): Path to the JSON file
+        
+    Returns:
+        Root: Parsed JSON data as Pydantic model
+    """
+    with open(file_path, 'r') as f:
+        data = json.load(f)
+        return Root(**data)
+
+# Example usage:
+# data = parse_json_file('your_file.json')
+`;
+        }
+
+        function copyToClipboard() {
+            const code = outputEditor.getValue();
+            navigator.clipboard.writeText(code).then(() => {
+                alert("Code copied to clipboard!");
+            }).catch(err => {
+                console.error('Failed to copy code:', err);
+                alert("Failed to copy code to clipboard");
+            });
+        }
+
+        // Set some example data
+        const exampleXML = `<?xml version="1.0" encoding="UTF-8"?>
+<root>
+    <person id="1">
+        <name>John Doe</name>
+        <age>30</age>
+        <address>
+            <street>123 Main St</street>
+            <city>Example City</city>
+        </address>
+    </person>
+</root>`;
+
+        inputEditor.setValue(exampleXML);
+    </script>
+</body>
+</html> 
